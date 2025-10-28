@@ -19,7 +19,10 @@ class ModelExtensionExchange1c extends Model
 	private	$CATEGORIES		= array();
 	private	$ATTRIBUTES		= array();
 	private	$ATTRIBUTE_GROUPS	= array();
-	private $PRODUCT_CATEGORIES = array();
+       private $PRODUCT_CATEGORIES = array();
+       private $PRODUCT_LINKS_BY_ID = array();
+       private $PRODUCT_LINKS_BY_GUID = array();
+       private $PRODUCT_EXISTS = array();
 
 	// Статистика
 	private $STAT			= array();
@@ -181,7 +184,7 @@ class ModelExtensionExchange1c extends Model
 	/**
 	 * Выполняет запрос, записывает в лог в режим отладки и возвращает результат
 	 */
-	function query($sql)
+       	function query($sql)
 	{
 
 		if ($this->config->get('exchange1c_log_debug_line_view') == 1) {
@@ -194,6 +197,56 @@ class ModelExtensionExchange1c extends Model
 		$this->log($sql, 3, $line);
 		return $this->db->query($sql);
 	} // query()
+
+
+	private function ensureProductLinkCache()
+	{
+		if (!empty($this->PRODUCT_LINKS_BY_ID) || !empty($this->PRODUCT_LINKS_BY_GUID)) {
+			return;
+		}
+
+		$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_to_1c`");
+
+		foreach ($query->rows as $row) {
+			$product_id = (int)$row['product_id'];
+			$guid = $row['guid'];
+			$this->PRODUCT_LINKS_BY_ID[$product_id] = $row;
+			if ($guid !== '') {
+				$this->PRODUCT_LINKS_BY_GUID[$guid] = $row;
+			}
+		}
+	}
+
+
+	private function setProductLinkCache($product_id, $guid, $row)
+	{
+		$product_id = (int)$product_id;
+		$row['product_id'] = $product_id;
+		$row['guid'] = $guid;
+		$this->PRODUCT_LINKS_BY_ID[$product_id] = $row;
+
+		if ($guid !== '') {
+			$this->PRODUCT_LINKS_BY_GUID[$guid] = $row;
+		}
+	}
+
+
+	private function removeProductLinkCache($product_id, $guid = '', $keep_exist = false)
+	{
+		$product_id = (int)$product_id;
+		unset($this->PRODUCT_LINKS_BY_ID[$product_id]);
+
+		if ($guid !== '') {
+			if (isset($this->PRODUCT_LINKS_BY_GUID[$guid]) && (int)$this->PRODUCT_LINKS_BY_GUID[$guid]['product_id'] === $product_id) {
+				unset($this->PRODUCT_LINKS_BY_GUID[$guid]);
+			}
+		}
+
+		if (!$keep_exist) {
+			unset($this->PRODUCT_EXISTS[$product_id]);
+		}
+	}
+
 
 
 	/**
@@ -2005,6 +2058,16 @@ class ModelExtensionExchange1c extends Model
 		}
 		$this->query($sql);
 
+		$link_row = array();
+		if (isset($data['version'])) {
+			$link_row['version'] = $data['version'];
+		}
+		if (isset($data['delete'])) {
+			$link_row['delete'] = $data['delete'];
+		}
+		$this->setProductLinkCache($product_id, $data['product_guid'], $link_row);
+		$this->PRODUCT_EXISTS[$product_id] = true;
+
 		// Пропишем товар в магазин
 		$this->query("INSERT INTO `" . DB_PREFIX . "product_to_store` SET `product_id` = " . (int)$product_id . ", `store_id` = " . $this->STORE_ID);
 		$this->log("Товар добавлен в магазин, store_id = " . $this->STORE_ID, 2);
@@ -2850,32 +2913,57 @@ class ModelExtensionExchange1c extends Model
 			$this->updateProduct($product_id, $data);
 			if ($this->ERROR) return false;
 
-			if ($check_link) {
+                        if ($check_link) {
 
-				$this->log("Проверка связи id->Ид");
-				// Проверим связь
-				$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_to_1c` WHERE `product_id` = '" . (int)$product_id . "'");
-				if (!$query->num_rows > 1) {
-					$this->log("ВНИМАНИЕ! у товара большей одной связи с ИД учетной системы (1С):");
-					foreach ($query->rows as $row) {
-						$this->log("GUID: " . $row['guid']);
-					}
-				}
-				if (!$query->num_rows) {
-					// Связь с 1С только по Ид объекта из торговой системы
-					$sql = "INSERT INTO `" . DB_PREFIX . "product_to_1c` SET `product_id` = " . (int)$product_id . ", `guid` = '" . $this->db->escape($data['product_guid']) . "'";
-					if (isset($data['version'])) {
-						$sql .= ", `version` = '" . $this->db->escape($data['version']) . "'";
-						$this->log("Версия товара в УС: " . $data['version'], 2);
-					}
-					$this->query($sql);
-				} else {
-					// связь есть, проверим
-					if ($query->row['guid'] != $data['product_guid']) {
-						$this->query("UPDATE `" . DB_PREFIX . "product_to_1c` SET `guid` = '" . $this->db->escape($data['product_guid']) . "' WHERE `product_id` = " . (int)$product_id);
-					}
-				}
-			}
+                                $this->log("Проверка связи id->Ид");
+                                $link_row = isset($this->PRODUCT_LINKS_BY_ID[(int)$product_id]) ? $this->PRODUCT_LINKS_BY_ID[(int)$product_id] : null;
+
+                                if (!$link_row) {
+                                        // Проверим связь в базе только если нет кэша
+                                        $query = $this->query('SELECT * FROM `' . DB_PREFIX . 'product_to_1c` WHERE `product_id` = \'' . (int)$product_id . '\'');
+                                        if ($query->num_rows > 1) {
+                                                $this->log('ВНИМАНИЕ! у товара большей одной связи с ИД учетной системы (1С):');
+                                                foreach ($query->rows as $row) {
+                                                        $this->log('GUID: ' . $row['guid']);
+                                                }
+                                        }
+                                        if ($query->num_rows) {
+                                                $link_row = $query->row;
+                                                $this->setProductLinkCache($product_id, $link_row['guid'], $link_row);
+                                        }
+                                }
+
+                                if (!$link_row) {
+                                        // Связь с 1С только по Ид объекта из торговой системы
+                                        $sql = 'INSERT INTO `' . DB_PREFIX . 'product_to_1c` SET `product_id` = ' . (int)$product_id . ', `guid` = \'' . $this->db->escape($data['product_guid']) . '\'';
+                                        if (isset($data['version'])) {
+                                                $sql .= ', `version` = \'' . $this->db->escape($data['version']) . '\'';
+                                                $this->log('Версия товара в УС: ' . $data['version'], 2);
+                                        }
+                                        $this->query($sql);
+
+                                        $link_data = array();
+                                        if (isset($data['version'])) {
+                                                $link_data['version'] = $data['version'];
+                                        }
+                                        $this->setProductLinkCache($product_id, $data['product_guid'], $link_data);
+                                } else {
+                                        // связь есть, проверим
+                                        if ($link_row['guid'] != $data['product_guid']) {
+                                                $old_guid = $link_row['guid'];
+                                                $this->query('UPDATE `' . DB_PREFIX . 'product_to_1c` SET `guid` = \'' . $this->db->escape($data['product_guid']) . '\' WHERE `product_id` = ' . (int)$product_id);
+                                                $link_row['guid'] = $data['product_guid'];
+                                                $this->removeProductLinkCache($product_id, $old_guid, true);
+                                                $this->setProductLinkCache($product_id, $link_row['guid'], $link_row);
+                                        } elseif (isset($data['version']) && (!isset($link_row['version']) || $link_row['version'] != $data['version'])) {
+                                                $this->query('UPDATE `' . DB_PREFIX . 'product_to_1c` SET `version` = \'' . $this->db->escape($data['version']) . '\' WHERE `product_id` = ' . (int)$product_id);
+                                                $link_row['version'] = $data['version'];
+                                                $this->setProductLinkCache($product_id, $link_row['guid'], $link_row);
+                                        }
+                                }
+
+                                $this->PRODUCT_EXISTS[$product_id] = true;
+                        }
 		}
 
 		// SEO формируем когда известен product_id и товар записан
@@ -4295,41 +4383,43 @@ class ModelExtensionExchange1c extends Model
 	private function searchProduct(&$data)
 	{
 
+		$this->ensureProductLinkCache();
+
 		$product_id = 0;
 		$version = '';
+		$link = null;
 
-		if ($data['product_id']) {
+                if (!empty($data['product_id']) && isset($this->PRODUCT_LINKS_BY_ID[(int)$data['product_id']])) {
+                        $link = $this->PRODUCT_LINKS_BY_ID[(int)$data['product_id']];
 
-			// Проверим связи по ID
-			$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_to_1c` WHERE `product_id` = " . (int)$data['product_id']);
-			if ($query->num_rows) {
+                        if ($link['guid'] != $data['product_guid']) {
+                                $old_guid = $link['guid'];
+                                $this->query("UPDATE `" . DB_PREFIX . "product_to_1c` SET `guid` = '" . $this->db->escape($data['product_guid']) . "' WHERE `product_id` = " . (int)$data['product_id']);
+                                $link['guid'] = $data['product_guid'];
+                                $this->removeProductLinkCache($link['product_id'], $old_guid, true);
+                                $this->setProductLinkCache($link['product_id'], $link['guid'], $link);
+                        }
+                } elseif (!empty($data['product_guid']) && isset($this->PRODUCT_LINKS_BY_GUID[$data['product_guid']])) {
+                        $link = $this->PRODUCT_LINKS_BY_GUID[$data['product_guid']];
+                }
 
-				$product_id 	= $query->row['product_id'];
-				$version 		= $query->row['version'];
-				// Если Ид отличается
-				if ($query->row['guid'] != $data['product_guid']) {
-					$this->query("UPDATE `" . DB_PREFIX . "product_to_1c` SET `guid` = '" . $this->db->escape($data['product_guid']) . "' WHERE `product_id` = " . (int)$data['product_id']);
-				}
-			}
-		} else {
-
-			// Проверим связи по Ид
-			$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_to_1c` WHERE `guid` = '" . $this->db->escape($data['product_guid']) . "'");
-			if ($query->num_rows) {
-				$product_id 	= $query->row['product_id'];
-				$version 		= $query->row['version'];
-			}
+		if ($link) {
+			$product_id = (int)$link['product_id'];
+			$version = isset($link['version']) ? $link['version'] : '';
 		}
 
-		//$this->log($product_id);
 		$data['old_version'] = $version;
 
-		// Проверим существование товара
 		if ($product_id) {
-			$query_product = $this->query("SELECT `product_id` FROM `" . DB_PREFIX . "product` WHERE `product_id` = " . (int)$product_id);
-			if (!$query_product->num_rows && $product_id) {
-				// Удалим связь на несуществующий товар
+			if (!array_key_exists($product_id, $this->PRODUCT_EXISTS)) {
+				$query_product = $this->query("SELECT `product_id` FROM `" . DB_PREFIX . "product` WHERE `product_id` = " . (int)$product_id);
+				$this->PRODUCT_EXISTS[$product_id] = (bool)$query_product->num_rows;
+			}
+
+			if (!$this->PRODUCT_EXISTS[$product_id]) {
+				$guid = $link ? $link['guid'] : '';
 				$this->query("DELETE FROM `" . DB_PREFIX . "product_to_1c` WHERE `product_id` = " . (int)$product_id);
+				$this->removeProductLinkCache($product_id, $guid);
 				$product_id = 0;
 			}
 		}
@@ -4528,10 +4618,12 @@ class ModelExtensionExchange1c extends Model
 			$this->log("ВНИМАНИЕ! Категории отсутствуют, новые товары будут без категорий!");
 		}
 
-		$this->log("Товаров в файле: " . count($xml->Товар));
-		$this->STAT['product_num'] = count($xml->Товар);
+               $this->log("Товаров в файле: " . count($xml->Товар));
+               $this->STAT['product_num'] = count($xml->Товар);
 
-		foreach ($xml->Товар as $num => $product) {
+               $this->ensureProductLinkCache();
+
+               foreach ($xml->Товар as $num => $product) {
 
 			$data = array();
 			$data['name']			= htmlspecialchars(trim((string)$product->Наименование));
