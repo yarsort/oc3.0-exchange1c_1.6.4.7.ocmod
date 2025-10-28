@@ -5393,38 +5393,46 @@ class ModelExtensionExchange1c extends Model
 		$query_option = $this->query("SELECT `po`.`option_id`, `po`.`product_option_id`, `od`.`name`, `po`.`required` FROM `" . DB_PREFIX . "product_option` `po` LEFT JOIN `" . DB_PREFIX . "option_description` `od` ON (`po`.`option_id` = `od`.`option_id`) WHERE `po`.`product_id` = " . (int)$product_id . " AND `od`.`language_id` = " . $this->LANG_ID);
 
 		if ($query_option->num_rows) {
-			// Получим значения этих опций
+			$product_option_ids = array();
+
 			foreach ($query_option->rows as $row_option) {
 
-				$product_option_id = $row_option['product_option_id'];
+				$product_option_id = (int)$row_option['product_option_id'];
+				$product_option_ids[] = $product_option_id;
 				$data[$product_option_id] = array(
-					'product_option_id'	=> $row_option['product_option_id'],
+					'product_option_id'	=> $product_option_id,
 					'option_id'			=> $row_option['option_id'],
 					'name'				=> $row_option['name'],
-					'required'			=> $row_option['required']
+					'required'			=> $row_option['required'],
+					'values'			=> array()
+				);
+			}
+
+			if ($product_option_ids) {
+				$query_value = $this->query(
+					"SELECT `pov`.*, `ovd`.`name` FROM `" . DB_PREFIX . "product_option_value` `pov` " .
+					"LEFT JOIN `" . DB_PREFIX . "option_value_description` `ovd` ON (`pov`.`option_value_id` = `ovd`.`option_value_id`) " .
+					"WHERE `pov`.`product_option_id` IN (" . implode(',', array_map('intval', $product_option_ids)) . ") " .
+					"AND `ovd`.`language_id` = " . (int)$this->LANG_ID
 				);
 
-				$query_value = $this->query("SELECT * FROM `" . DB_PREFIX . "product_option_value` `pov` LEFT JOIN `" . DB_PREFIX . "option_value_description` `ovd` ON (`pov`.`option_value_id` = `ovd`.`option_value_id`) WHERE `pov`.`product_option_id` = " . (int)$product_option_id . " AND `ovd`.`language_id` = " . $this->LANG_ID);
+				foreach ($query_value->rows as $row_value) {
 
-				if ($query_value->num_rows) {
-					$values = array();
+					$product_option_id = (int)$row_value['product_option_id'];
 
-					foreach ($query_value->rows as $row_value) {
-						$values[$row_value['product_option_value_id']] = array(
-							'product_option_value_id' => $row_value['product_option_value_id'],
-							'option_value_id'	=> $row_value['option_value_id'],
-							'name'				=> $row_value['name'],
-							'quantity'			=> $row_value['quantity'],
-							'subtract'			=> $row_value['subtract'],
-							'price'				=> $row_value['price'],
-							'price_prefix'		=> $row_value['price_prefix'],
-							'points'			=> $row_value['points'],
-							'points_prefix'		=> $row_value['points_prefix'],
-							'weight'			=> $row_value['weight'],
-							'weight_prefix'		=> $row_value['weight_prefix']
-						);
-					}
-					$data[$product_option_id]['values'] = $values;
+					$data[$product_option_id]['values'][$row_value['product_option_value_id']] = array(
+						'product_option_value_id' => $row_value['product_option_value_id'],
+						'option_value_id'	=> $row_value['option_value_id'],
+						'name'				=> $row_value['name'],
+						'quantity'			=> $row_value['quantity'],
+						'subtract'			=> $row_value['subtract'],
+						'price'				=> $row_value['price'],
+						'price_prefix'		=> $row_value['price_prefix'],
+						'points'			=> $row_value['points'],
+						'points_prefix'		=> $row_value['points_prefix'],
+						'weight'			=> $row_value['weight'],
+						'weight_prefix'		=> $row_value['weight_prefix']
+					);
 				}
 			}
 		}
@@ -5483,27 +5491,48 @@ class ModelExtensionExchange1c extends Model
 		$query = $this->query("SELECT `product_feature_id`,`quantity`,`price` FROM `" . DB_PREFIX . "product_feature` WHERE `product_id` = '" . $product_id . "'");
 		if ($query->num_rows) {
 
-			foreach ($query->rows as $feature) {
+			$feature_prices = array();
+			$feature_ids = array();
 
-				// Значения
-				$data_value = array();
-				$query_value = $this->query("SELECT `product_option_id`,`product_option_value_id` FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_feature_id` = '" . $feature['product_feature_id'] . "'");
-				foreach ($query_value->rows as $value) {
-					$data_value[$value['product_option_value_id']] = array(
-						'product_option_id'			=> $value['product_option_id'],
-						'product_option_value_id'	=> $value['product_option_value_id'],
-						'price'						=> $feature['price']
-					);
-					if ($price_min > $feature['price'] || $price_min == 0) {
-						$price_min = $feature['price'];
-					}
-					if ($price_max < $feature['price']) {
-						$price_max = $feature['price'];
-					}
+			foreach ($query->rows as $feature) {
+				$product_feature_id = (int)$feature['product_feature_id'];
+				$feature_ids[] = $product_feature_id;
+
+				$feature_price = (float)$feature['price'];
+				$feature_quantity = (float)$feature['quantity'];
+
+				if ($price_min > $feature_price || $price_min == 0) {
+					$price_min = $feature_price;
 				}
-				$data_quantity[$feature['product_feature_id']] = $feature['quantity'];
-				$quantity_total += $feature['quantity'];
-				$data_price[$feature['product_feature_id']] = $data_value;
+				if ($price_max < $feature_price) {
+					$price_max = $feature_price;
+				}
+
+				$data_quantity[$product_feature_id] = $feature_quantity;
+				$quantity_total += $feature_quantity;
+				$data_price[$product_feature_id] = array();
+				$feature_prices[$product_feature_id] = $feature_price;
+			}
+
+			if ($feature_ids) {
+				$query_value = $this->query(
+					"SELECT `product_feature_id`,`product_option_id`,`product_option_value_id` FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_feature_id` IN (" . implode(',', array_map('intval', $feature_ids)) . ")"
+				);
+
+				foreach ($query_value->rows as $value) {
+					$product_feature_id = (int)$value['product_feature_id'];
+
+					if (!isset($data_price[$product_feature_id])) {
+						continue;
+					}
+
+					$product_option_value_id = (int)$value['product_option_value_id'];
+					$data_price[$product_feature_id][$product_option_value_id] = array(
+						'product_option_id'				=> (int)$value['product_option_id'],
+						'product_option_value_id'	=> $product_option_value_id,
+						'price'						=> $feature_prices[$product_feature_id]
+					);
+				}
 			}
 		}
 
@@ -5702,6 +5731,7 @@ class ModelExtensionExchange1c extends Model
 		$this->STAT['offers_num'] = count($xml->Предложение);
 
 		$num_offer = 0;
+		$processed_product_ids = array();
 
 		// Перебираем все предложения
 		foreach ($xml->Предложение as $offer) {
@@ -5735,7 +5765,8 @@ class ModelExtensionExchange1c extends Model
 				}
 			}
 
-			$product_id = $old_product['product_id'];
+                        $product_id = $old_product['product_id'];
+                        $processed_product_ids[$product_id] = true;
 
 			// Если товар помечен на удаление, отключаем его
 			$data['delete'] = 0;
@@ -5934,47 +5965,102 @@ class ModelExtensionExchange1c extends Model
 			$update = $this->updateOffers($product_id, $data, $old_product);
 			if ($this->ERROR) return $num_offer;
 
-			// Удалим пустые опции у товара
-			$query = $this->query("SELECT `product_option_id` FROM `" . DB_PREFIX . "product_option` WHERE `product_id` = " . $product_id);
-			if ($query->num_rows) {
-				foreach ($query->rows as $row) {
-					$query_value = $this->query("SELECT `product_option_value_id` FROM `" . DB_PREFIX . "product_option_value` WHERE `product_option_id` = " . $row['product_option_id']);
-					if (!$query_value->num_rows) {
-						// нет значений, тогда удалим опцию
-						$this->query("DELETE FROM `" . DB_PREFIX . "product_option` WHERE `product_option_id` = " . $row['product_option_id']);
-						$this->log("Удалены пустая опциия в товаре, product_option_id = " . $row['product_option_id']);
-					}
-				}
-			}
+                        unset($data);
+                        $num_offer++;
+                } // foreach()
 
-			unset($data);
-			$num_offer++;
-		} // foreach()
+                if ($processed_product_ids) {
+                        $product_ids = array_keys($processed_product_ids);
+                        $query = $this->query(
+                                "SELECT `product_option_id`,`product_id` FROM `" . DB_PREFIX . "product_option` WHERE `product_id` IN (" . implode(',', array_map('intval', $product_ids)) . ")"
+                        );
 
-		// После загрузки всех предложений удалим неиспользуемые опции
-		$query = $this->query("SELECT `product_option_id`, `product_option_value_id` FROM `" . DB_PREFIX . "product_feature_value` WHERE `status` = 0");
-		if ($query->num_rows) {
-			$delete_options = array();
-			foreach ($query->rows as $feature_value) {
-				$delete_options[$feature_value['product_option_value_id']] = $feature_value['product_option_id'];
-			}
-			$this->log("К удалению опции:");
-			$this->log($delete_options);
-			foreach ($delete_options as $product_option_value_id => $product_option_id) {
-				if ($product_option_value_id == 0) {
-					$this->query("DELETE FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_option_value_id` = 0");
-				} else {
-					$this->query("DELETE FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_option_value_id` = " . $product_option_value_id);
-					$this->query("DELETE FROM `" . DB_PREFIX . "product_option_value` WHERE `product_option_value_id` = " . $product_option_value_id);
+                        if ($query->num_rows) {
+                                $option_ids = array();
+                                foreach ($query->rows as $row) {
+                                        $option_ids[(int)$row['product_option_id']] = (int)$row['product_id'];
+                                }
 
-					// После удаления значений, если опция пустая удалим опцию
-					$query_count_options = $this->query("SELECT count(*) as `count` FROM `" . DB_PREFIX . "product_option_value` WHERE `product_option_id` = " . $product_option_id);
-					if ($query_count_options->row['count'] == 0) {
-						$this->query("DELETE FROM `" . DB_PREFIX . "product_option` WHERE `product_option_id` = " . $product_option_id);
-					}
-				}
-			}
-		}
+                                if ($option_ids) {
+                                        $query_value = $this->query(
+                                                "SELECT DISTINCT `product_option_id` FROM `" . DB_PREFIX . "product_option_value` WHERE `product_option_id` IN (" . implode(',', array_map('intval', array_keys($option_ids))) . ")"
+                                        );
+
+                                        $non_empty_option_ids = array();
+                                        foreach ($query_value->rows as $row_value) {
+                                                $non_empty_option_ids[(int)$row_value['product_option_id']] = true;
+                                        }
+
+                                        $empty_option_ids = array();
+                                        foreach ($option_ids as $product_option_id => $product_id) {
+                                                if (!isset($non_empty_option_ids[$product_option_id])) {
+                                                        $empty_option_ids[$product_option_id] = $product_id;
+                                                }
+                                        }
+
+                                        if ($empty_option_ids) {
+                                                foreach ($empty_option_ids as $product_option_id => $product_id) {
+                                                        $this->query("DELETE FROM `" . DB_PREFIX . "product_option` WHERE `product_option_id` = " . (int)$product_option_id);
+                                                        $this->log("Удалена пустая опция в товаре, product_option_id = " . $product_option_id . ", product_id = " . $product_id);
+                                                }
+                                        }
+                                }
+                        }
+                }
+
+                // После загрузки всех предложений удалим неиспользуемые опции
+                $query = $this->query("SELECT `product_option_id`, `product_option_value_id` FROM `" . DB_PREFIX . "product_feature_value` WHERE `status` = 0");
+                if ($query->num_rows) {
+                        $delete_options = array();
+                        $delete_zero_values = false;
+                        foreach ($query->rows as $feature_value) {
+                                if ((int)$feature_value['product_option_value_id'] == 0) {
+                                        $delete_zero_values = true;
+                                } else {
+                                        $delete_options[(int)$feature_value['product_option_value_id']] = (int)$feature_value['product_option_id'];
+                                }
+                        }
+                        $this->log("К удалению опции:");
+                        $this->log($delete_options);
+
+                        if ($delete_zero_values) {
+                                $this->query("DELETE FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_option_value_id` = 0");
+                        }
+
+                        if ($delete_options) {
+                                $product_option_value_ids = array_keys($delete_options);
+                                $product_option_value_ids_sql = implode(',', array_map('intval', $product_option_value_ids));
+                                $this->query("DELETE FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_option_value_id` IN (" . $product_option_value_ids_sql . ")");
+                                $this->query("DELETE FROM `" . DB_PREFIX . "product_option_value` WHERE `product_option_value_id` IN (" . $product_option_value_ids_sql . ")");
+
+                                $product_option_ids = array_unique(array_values($delete_options));
+                                if ($product_option_ids) {
+                                        $product_option_ids_sql = implode(',', array_map('intval', $product_option_ids));
+                                        $query_count_options = $this->query(
+                                                "SELECT `product_option_id`, COUNT(*) AS `count` FROM `" . DB_PREFIX . "product_option_value` WHERE `product_option_id` IN (" . $product_option_ids_sql . ") GROUP BY `product_option_id` HAVING `count` > 0"
+                                        );
+
+                                        $has_values = array();
+                                        foreach ($query_count_options->rows as $row_count) {
+                                                $has_values[(int)$row_count['product_option_id']] = true;
+                                        }
+
+                                        $delete_product_option_ids = array();
+                                        foreach ($product_option_ids as $product_option_id) {
+                                                if (!isset($has_values[$product_option_id])) {
+                                                        $delete_product_option_ids[] = (int)$product_option_id;
+                                                }
+                                        }
+
+                                        if ($delete_product_option_ids) {
+                                                foreach ($delete_product_option_ids as $product_option_id) {
+                                                        $this->log("Удалена пустая опция после очистки связей, product_option_id = " . $product_option_id);
+                                                }
+                                                $this->query("DELETE FROM `" . DB_PREFIX . "product_option` WHERE `product_option_id` IN (" . implode(',', $delete_product_option_ids) . ")");
+                                        }
+                                }
+                        }
+                }
 
 		$this->logStat('offers');
 
