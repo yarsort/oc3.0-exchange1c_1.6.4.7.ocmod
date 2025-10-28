@@ -19,10 +19,13 @@ class ModelExtensionExchange1c extends Model
 	private	$CATEGORIES		= array();
 	private	$ATTRIBUTES		= array();
 	private	$ATTRIBUTE_GROUPS	= array();
-       private $PRODUCT_CATEGORIES = array();
-       private $PRODUCT_LINKS_BY_ID = array();
-       private $PRODUCT_LINKS_BY_GUID = array();
-       private $PRODUCT_EXISTS = array();
+	private $PRODUCT_CATEGORIES = array();
+	private $PRODUCT_LINKS_BY_ID = array();
+	private $PRODUCT_LINKS_BY_GUID = array();
+	private $PRODUCT_EXISTS = array();
+	private $PRODUCT_FEATURE_GC = array();
+	private $PRODUCT_FEATURE_VALUE_GC = array();
+	private $PRODUCT_PRICE_GC = array();
 
 	// Статистика
 	private $STAT			= array();
@@ -1952,15 +1955,17 @@ class ModelExtensionExchange1c extends Model
 	private function setProductFeatureValue($product_feature_id, $product_id, $product_option_id, $product_option_value_id)
 	{
 
-		$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_feature_id` = " . (int)$product_feature_id . " AND `product_id` = " . (int)$product_id . " AND `product_option_id` = " . (int)$product_option_id . " AND `product_option_value_id` = " . (int)$product_option_value_id);
-		if ($query->num_rows) {
-			$this->query("UPDATE `" . DB_PREFIX . "product_feature_value` SET `date_modified` = '" . $this->NOW . "' WHERE `product_feature_id` = " . (int)$product_feature_id . " AND `product_id` = " . (int)$product_id . " AND `product_option_id` = " . (int)$product_option_id . " AND `product_option_value_id` = " . (int)$product_option_value_id);
-			return false;
-		}
-		$this->query("INSERT INTO `" . DB_PREFIX . "product_feature_value` SET `product_feature_id` = " . (int)$product_feature_id . ", `product_id` = " . (int)$product_id . ", `product_option_id` = " . (int)$product_option_id . ", `product_option_value_id` = " . (int)$product_option_value_id . ", `date_modified` = '" . $this->NOW . "'");
-		$product_option_value_id = $this->db->getLastId();
-		return true;
-	} // setProductFeatureValue()
+               $query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_feature_id` = " . (int)$product_feature_id . " AND `product_id` = " . (int)$product_id . " AND `product_option_id` = " . (int)$product_option_id . " AND `product_option_value_id` = " . (int)$product_option_value_id);
+               if ($query->num_rows) {
+                       $this->query("UPDATE `" . DB_PREFIX . "product_feature_value` SET `date_modified` = '" . $this->NOW . "' WHERE `product_feature_id` = " . (int)$product_feature_id . " AND `product_id` = " . (int)$product_id . " AND `product_option_id` = " . (int)$product_option_id . " AND `product_option_value_id` = " . (int)$product_option_value_id);
+                       $this->markProductFeatureValueUsed($product_id, $product_option_value_id);
+                       return false;
+               }
+               $this->query("INSERT INTO `" . DB_PREFIX . "product_feature_value` SET `product_feature_id` = " . (int)$product_feature_id . ", `product_id` = " . (int)$product_id . ", `product_option_id` = " . (int)$product_option_id . ", `product_option_value_id` = " . (int)$product_option_value_id . ", `date_modified` = '" . $this->NOW . "'");
+               $this->markProductFeatureValueUsed($product_id, $product_option_value_id);
+               $product_option_value_id = $this->db->getLastId();
+               return true;
+       } // setProductFeatureValue()
 
 
 	/**
@@ -2114,8 +2119,8 @@ class ModelExtensionExchange1c extends Model
 			if ($this->ERROR) return false;
 		}
 
-		// Очистим кэш товаров
-		//$this->cache->delete('product');
+               // Очистим кэш товаров
+               //$this->cache->delete('product');
 
 		return $product_id;
 	} // addProduct()
@@ -2285,12 +2290,10 @@ class ModelExtensionExchange1c extends Model
 
 		$no_update = array();
 
-		// Перед загрузкой товара, нужно удалить все старые характеристики, цены, остатки и опции в товаре
+		// Перед загрузкой товара подготовим актуальные списки данных для выборочного обновления
 		if (!$data['delete']) {
-			$this->query("UPDATE `" . DB_PREFIX . "product_feature` SET `status` = 0 WHERE `product_id` = " . $product_id);
-			$this->query("UPDATE `" . DB_PREFIX . "product_feature_value` SET `status` = 0 WHERE `product_id` = " . $product_id);
-			$this->query("DELETE FROM `" . DB_PREFIX . "product_special` WHERE `product_id` = '" . (int)$product_id . "' AND `product_special_group_id` = '". $this->config->get('exchange1c_product_special_group_id')."'");
-			$this->query("DELETE FROM `" . DB_PREFIX . "product_discount` WHERE `product_id` = '" . (int)$product_id . "'");
+			$this->primeProductFeatureCleanup($product_id);
+			$this->primeProductPriceCleanup($product_id);
 			$this->query("UPDATE `" . DB_PREFIX . "product_to_1c` SET `delete` = 0 WHERE `product_id` = " . $product_id);
 		} else {
 			if ($this->config->get('exchange1c_product_delete_mode') == 'disable') {
@@ -2425,12 +2428,16 @@ class ModelExtensionExchange1c extends Model
 			if ($this->ERROR) return false;
 		}
 
-		// ДОПОЛНИТЕЛЬНЫЕ КАРТИНКИ
-		if (isset($data['images'])) {
-			$this->setProductImages($product_id, $data['images']);
-			if ($this->ERROR) return false;
-		}
+               // ДОПОЛНИТЕЛЬНЫЕ КАРТИНКИ
+               if (isset($data['images'])) {
+                       $this->setProductImages($product_id, $data['images']);
+                       if ($this->ERROR) return false;
+               }
 
+		if (!$data['delete']) {
+			$this->flushProductFeatureCleanup($product_id);
+			$this->flushProductPriceCleanup($product_id);
+		}
 		// Если есть характеристика
 		$product_feature_id = isset($data['product_feature_id']) ? $data['product_feature_id'] : 0;
 
@@ -2438,6 +2445,111 @@ class ModelExtensionExchange1c extends Model
 		//$this->cache->delete('product');
 
 	} // updateProduct()
+
+	private function primeProductFeatureCleanup($product_id)
+	{
+		$product_id = (int)$product_id;
+		if (!isset($this->PRODUCT_FEATURE_GC[$product_id])) {
+			$this->PRODUCT_FEATURE_GC[$product_id] = array();
+			$query = $this->query("SELECT `product_feature_id` FROM `" . DB_PREFIX . "product_feature` WHERE `product_id` = " . $product_id);
+			foreach ($query->rows as $row) {
+				$this->PRODUCT_FEATURE_GC[$product_id][(int)$row['product_feature_id']] = true;
+			}
+		}
+		if (!isset($this->PRODUCT_FEATURE_VALUE_GC[$product_id])) {
+			$this->PRODUCT_FEATURE_VALUE_GC[$product_id] = array();
+			$query = $this->query("SELECT `product_option_value_id` FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_id` = " . $product_id);
+			foreach ($query->rows as $row) {
+				$value_id = (int)$row['product_option_value_id'];
+				if ($value_id) {
+					$this->PRODUCT_FEATURE_VALUE_GC[$product_id][$value_id] = true;
+				}
+			}
+		}
+	}
+
+	private function markProductFeatureUsed($product_id, $product_feature_id)
+	{
+		$product_id = (int)$product_id;
+		$product_feature_id = (int)$product_feature_id;
+		if (isset($this->PRODUCT_FEATURE_GC[$product_id][$product_feature_id])) {
+			unset($this->PRODUCT_FEATURE_GC[$product_id][$product_feature_id]);
+		}
+	}
+
+	private function markProductFeatureValueUsed($product_id, $product_option_value_id)
+	{
+		$product_id = (int)$product_id;
+		$product_option_value_id = (int)$product_option_value_id;
+		if ($product_option_value_id && isset($this->PRODUCT_FEATURE_VALUE_GC[$product_id][$product_option_value_id])) {
+			unset($this->PRODUCT_FEATURE_VALUE_GC[$product_id][$product_option_value_id]);
+		}
+	}
+
+	private function flushProductFeatureCleanup($product_id = 0)
+	{
+		$product_ids = array();
+		if ($product_id) {
+			$product_ids[] = (int)$product_id;
+		} else {
+			$product_ids = array_unique(array_merge(array_keys($this->PRODUCT_FEATURE_GC), array_keys($this->PRODUCT_FEATURE_VALUE_GC)));
+		}
+
+		foreach ($product_ids as $pid) {
+			if (isset($this->PRODUCT_FEATURE_GC[$pid]) && $this->PRODUCT_FEATURE_GC[$pid]) {
+				$ids = array_keys($this->PRODUCT_FEATURE_GC[$pid]);
+				$this->query("UPDATE `" . DB_PREFIX . "product_feature` SET `status` = 0 WHERE `product_feature_id` IN (" . implode(',', array_map('intval', $ids)) . ")");
+			}
+			if (isset($this->PRODUCT_FEATURE_VALUE_GC[$pid]) && $this->PRODUCT_FEATURE_VALUE_GC[$pid]) {
+				$ids = array_keys($this->PRODUCT_FEATURE_VALUE_GC[$pid]);
+				$this->query("UPDATE `" . DB_PREFIX . "product_feature_value` SET `status` = 0 WHERE `product_option_value_id` IN (" . implode(',', array_map('intval', $ids)) . ")");
+			}
+			unset($this->PRODUCT_FEATURE_GC[$pid], $this->PRODUCT_FEATURE_VALUE_GC[$pid]);
+		}
+	}
+
+	private function primeProductPriceCleanup($product_id)
+	{
+		$product_id = (int)$product_id;
+		if (!isset($this->PRODUCT_PRICE_GC[$product_id])) {
+			$prices = $this->getProductPrices($product_id);
+			$this->PRODUCT_PRICE_GC[$product_id] = array(
+				'discount' => array_fill_keys(array_keys($prices['discount']), true),
+				'special'  => array_fill_keys(array_keys($prices['special']), true),
+				'data'     => $prices
+			);
+		}
+		return $this->PRODUCT_PRICE_GC[$product_id]['data'];
+	}
+
+	private function markProductPriceUsed($product_id, $type, $id)
+	{
+		$product_id = (int)$product_id;
+		$id = (int)$id;
+		if (isset($this->PRODUCT_PRICE_GC[$product_id][$type][$id])) {
+			unset($this->PRODUCT_PRICE_GC[$product_id][$type][$id]);
+		}
+	}
+
+	private function flushProductPriceCleanup($product_id = 0)
+	{
+		$product_ids = $product_id ? array((int)$product_id) : array_keys($this->PRODUCT_PRICE_GC);
+		foreach ($product_ids as $pid) {
+			if (!isset($this->PRODUCT_PRICE_GC[$pid])) {
+				continue;
+			}
+			$discount_ids = array_keys($this->PRODUCT_PRICE_GC[$pid]['discount']);
+			if ($discount_ids) {
+				$this->query("DELETE FROM `" . DB_PREFIX . "product_discount` WHERE `product_discount_id` IN (" . implode(',', array_map('intval', $discount_ids)) . ")");
+			}
+			$special_ids = array_keys($this->PRODUCT_PRICE_GC[$pid]['special']);
+			if ($special_ids) {
+				$this->query("DELETE FROM `" . DB_PREFIX . "product_special` WHERE `product_special_id` IN (" . implode(',', array_map('intval', $special_ids)) . ")");
+			}
+			unset($this->PRODUCT_PRICE_GC[$pid]);
+		}
+	}
+
 
 
 	/**
@@ -5273,8 +5385,8 @@ class ModelExtensionExchange1c extends Model
 			return false;
 		}
 
-		// Старые цены
-		$old_prices = $this->getProductPrices($product_id);
+               // Старые цены
+               $old_prices = $this->primeProductPriceCleanup($product_id);
 
 		// Цена товара
 		$price_product = 0;
@@ -5357,23 +5469,25 @@ class ModelExtensionExchange1c extends Model
 					if ($config_price_type['table_price'] == 'discount') {
 
 						// Поищем старую цену
-						foreach ($old_prices['discount'] as $old_price) {
-							if ($old_price['customer_group_id'] == $config_price_type['customer_group_id']) {
+                                                foreach ($old_prices['discount'] as $old_price) {
+                                                        if ($old_price['customer_group_id'] == $config_price_type['customer_group_id']) {
 
-								if (isset($old_price['price'])) {
+                                                                if (isset($old_price['price'])) {
 
-									$this->query("UPDATE `" . DB_PREFIX . "product_discount` SET `price` = '" . $price . "' WHERE `product_discount_id` = '" . $old_price['product_discount_id'] . "'");
-								}
-							} else {
+                                                                        $this->query("UPDATE `" . DB_PREFIX . "product_discount` SET `price` = '" . $price . "' WHERE `product_discount_id` = '" . $old_price['product_discount_id'] . "'");
+                                                                        $this->markProductPriceUsed($product_id, 'discount', $old_price['product_discount_id']);
+                                                                }
+                                                        } else {
 								// Все текущие скидки выбранного товара
 								$discounts = array_column($old_prices['discount'], 'customer_group_id');
 
 								if (isset($old_price['price'])) {
 
-									if (in_array($config_price_type['customer_group_id'], $discounts)) {
+                                                                        if (in_array($config_price_type['customer_group_id'], $discounts)) {
 
-										$this->query("UPDATE `" . DB_PREFIX . "product_discount` SET `price` = '" . $price . "', `customer_group_id` = '" . (int)$old_price['customer_group_id'] . "' WHERE `product_discount_id` = '" . $old_price['product_discount_id'] . "'AND `customer_group_id` = '" . (int)$config_price_type['customer_group_id'] . "'");
-									} else {
+                                                                                $this->query("UPDATE `" . DB_PREFIX . "product_discount` SET `price` = '" . $price . "', `customer_group_id` = '" . (int)$old_price['customer_group_id'] . "' WHERE `product_discount_id` = '" . $old_price['product_discount_id'] . "'AND `customer_group_id` = '" . (int)$config_price_type['customer_group_id'] . "'");
+                                                                                $this->markProductPriceUsed($product_id, 'discount', $old_price['product_discount_id']);
+                                                                        } else {
 
 										$this->query("INSERT INTO `" . DB_PREFIX . "product_discount` SET `product_id` = " . (int)$product_id . ", `quantity` = " . (float)$config_price_type['quantity'] . ", `priority` = " . (int)$config_price_type['priority'] . ", `customer_group_id` = " . (int)$config_price_type['customer_group_id'] . ", `price` = '" . (float)$price . "'");
 									}
@@ -5389,14 +5503,15 @@ class ModelExtensionExchange1c extends Model
 					} elseif ($config_price_type['table_price'] == 'special') {
 
 						// Поищем старую цену
-						foreach ($old_prices['special'] as $old_price) {
-							if ($old_price['customer_group_id'] == $config_price_type['customer_group_id'] && $old_price['product_special_group_id'] == $this->config->get('exchange1c_product_special_group_id')) {
-								// if ($old_price['price'] != $price) {
-									$this->query("UPDATE `" . DB_PREFIX . "product_special` SET `price` = '" . $price . "' WHERE `product_special_id` = '" . $old_price['product_special_id'] . "' AND `product_special_group_id` = '".$this->config->get('exchange1c_product_special_group_id')."'");
-									return;
-								// }
-							}
-						}
+                                                foreach ($old_prices['special'] as $old_price) {
+                                                        if ($old_price['customer_group_id'] == $config_price_type['customer_group_id'] && $old_price['product_special_group_id'] == $this->config->get('exchange1c_product_special_group_id')) {
+                                                                // if ($old_price['price'] != $price) {
+                                                                        $this->query("UPDATE `" . DB_PREFIX . "product_special` SET `price` = '" . $price . "' WHERE `product_special_id` = '" . $old_price['product_special_id'] . "' AND `product_special_group_id` = '".$this->config->get('exchange1c_product_special_group_id')."'");
+                                                                        $this->markProductPriceUsed($product_id, 'special', $old_price['product_special_id']);
+                                                                        return;
+                                                                // }
+                                                        }
+                                                }
 
 						$this->log("Цена акции '" . $config_price_type['keyword'] . "' = " . $price);
 						
@@ -5656,15 +5771,17 @@ class ModelExtensionExchange1c extends Model
 		}
 
 		$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_feature` WHERE `guid` = '" . $this->db->escape($data['feature_guid']) . "'");
-		if ($query->num_rows) {
-			$update_fields = $this->compareArrays($query, $data);
-			if ($update_fields) {
-				$this->query("UPDATE `" . DB_PREFIX . "product_feature` SET " . $update_fields . " WHERE `product_feature_id` = '" . $query->row['product_feature_id'] . "'");
-			}
-			return $query->row['product_feature_id'];
-		}
+               if ($query->num_rows) {
+                       $product_feature_id = (int)$query->row['product_feature_id'];
+                       $update_fields = $this->compareArrays($query, $data);
+                       if ($update_fields) {
+                               $this->query("UPDATE `" . DB_PREFIX . "product_feature` SET " . $update_fields . " WHERE `product_feature_id` = '" . $product_feature_id . "'");
+                       }
+                       $this->markProductFeatureUsed($product_id, $product_feature_id);
+                       return $product_feature_id;
+               }
 
-		$this->query("INSERT INTO `" . DB_PREFIX . "product_feature`
+               $this->query("INSERT INTO `" . DB_PREFIX . "product_feature`
 			SET `product_id` = " . $product_id . ",
 			 `name` = '" . $data['feature_name'] . "',
 			 `guid` = '" . $this->db->escape($data['feature_guid']) . "',
@@ -5674,7 +5791,9 @@ class ModelExtensionExchange1c extends Model
 			 `quantity` = '" . (float)$data['quantity'] . "',
 			 `status` = 1");
 
-		return $this->db->getLastId();
+               $product_feature_id = $this->db->getLastId();
+               $this->markProductFeatureUsed($product_id, $product_feature_id);
+               return $product_feature_id;
 	} // setProductFeature()
 
 
@@ -5776,27 +5895,29 @@ class ModelExtensionExchange1c extends Model
 				// Пропишем значение опции в товар
 				$product_option_value_id = 0;
 				$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_option_value` WHERE `product_id` = " . $product_id . " AND `option_value_id` = " . $option_value_id);
-				if ($query->num_rows) {
-					$product_option_value_id = $query->row['product_option_value_id'];
-					$update_fields = $this->compareArrays($query, $data);
-					if ($update_fields) {
-						$this->query("UPDATE `" . DB_PREFIX . "product_option_value` SET " . $update_fields . " WHERE `product_option_value_id` = " . $query->row['product_option_value_id']);
-					}
-				} else {
-					$this->query("INSERT INTO `" . DB_PREFIX . "product_option_value` SET `product_option_id` = " . $product_option_id . ", `product_id` = " . $product_id . ", `option_id` = " . $option_id . ", `option_value_id` = " . $option_value_id . ", `quantity` = " . $quantity);
-					$product_option_value_id = $this->db->getLastId();
-				}
+                               if ($query->num_rows) {
+                                       $product_option_value_id = $query->row['product_option_value_id'];
+                                       $update_fields = $this->compareArrays($query, $data);
+                                       if ($update_fields) {
+                                               $this->query("UPDATE `" . DB_PREFIX . "product_option_value` SET " . $update_fields . " WHERE `product_option_value_id` = " . $query->row['product_option_value_id']);
+                                       }
+                               } else {
+                                       $this->query("INSERT INTO `" . DB_PREFIX . "product_option_value` SET `product_option_id` = " . $product_option_id . ", `product_id` = " . $product_id . ", `option_id` = " . $option_id . ", `option_value_id` = " . $option_value_id . ", `quantity` = " . $quantity);
+                                       $product_option_value_id = $this->db->getLastId();
+                               }
 
-				// Пропишем значения опции в значения характеристики
-				if ($product_feature_id) {
-					$query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_id` = " . $product_id . " AND `product_option_value_id` = " . $product_option_value_id);
-					if ($query->num_rows) {
-						$this->query("UPDATE `" . DB_PREFIX . "product_feature_value` SET `status` = 1 WHERE `product_option_value_id` = " . $product_option_value_id);
-					} else {
-						$this->query("INSERT INTO `" . DB_PREFIX . "product_feature_value` SET `product_feature_id` = " . $product_feature_id . ", `product_option_id` = " . $product_option_id . ", `product_id` = " . $product_id . ", `product_option_value_id` = " . $product_option_value_id . ", `status` = " . 1);
-					}
-				}
-			}
+                               // Пропишем значения опции в значения характеристики
+                               if ($product_feature_id) {
+                                       $query = $this->query("SELECT * FROM `" . DB_PREFIX . "product_feature_value` WHERE `product_id` = " . $product_id . " AND `product_option_value_id` = " . $product_option_value_id);
+                                       if ($query->num_rows) {
+                                               $this->query("UPDATE `" . DB_PREFIX . "product_feature_value` SET `status` = 1 WHERE `product_option_value_id` = " . $product_option_value_id);
+                                               $this->markProductFeatureValueUsed($product_id, $product_option_value_id);
+                                       } else {
+                                               $this->query("INSERT INTO `" . DB_PREFIX . "product_feature_value` SET `product_feature_id` = " . $product_feature_id . ", `product_option_id` = " . $product_option_id . ", `product_id` = " . $product_id . ", `product_option_value_id` = " . $product_option_value_id . ", `status` = " . 1);
+                                               $this->markProductFeatureValueUsed($product_id, $product_option_value_id);
+                                       }
+                               }
+                       }
 		} // foreach
 
 	} // setProductOptions()
@@ -5856,9 +5977,11 @@ class ModelExtensionExchange1c extends Model
 					continue;
 				}
 			}
+			$product_id = $old_product['product_id'];
+			$processed_product_ids[$product_id] = true;
 
-                        $product_id = $old_product['product_id'];
-                        $processed_product_ids[$product_id] = true;
+			$this->primeProductFeatureCleanup($product_id);
+			$this->primeProductPriceCleanup($product_id);
 
 			// Если товар помечен на удаление, отключаем его
 			$data['delete'] = 0;
@@ -6061,8 +6184,13 @@ class ModelExtensionExchange1c extends Model
                         $num_offer++;
                 } // foreach()
 
-                if ($processed_product_ids) {
-                        $product_ids = array_keys($processed_product_ids);
+		if ($processed_product_ids) {
+			foreach (array_keys($processed_product_ids) as $pid) {
+				$this->flushProductFeatureCleanup($pid);
+				$this->flushProductPriceCleanup($pid);
+			}
+
+			$product_ids = array_keys($processed_product_ids);
                         $query = $this->query(
                                 "SELECT `product_option_id`,`product_id` FROM `" . DB_PREFIX . "product_option` WHERE `product_id` IN (" . implode(',', array_map('intval', $product_ids)) . ")"
                         );
